@@ -1,0 +1,170 @@
+"""Builds the prompt from the persona config and calls the DeepSeek API."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Optional
+
+import httpx
+
+log = logging.getLogger(__name__)
+
+API_URL = "https://api.deepseek.com/chat/completions"
+
+# Used before the persona has been filled in from the Settings tab, so the
+# app still produces something sane instead of erroring out.
+FALLBACK_SYSTEM_PROMPT = (
+    "You are drafting a reply from a real person's Telegram account. "
+    "Keep it short and natural."
+)
+
+PERSONA_HEADER = (
+    "You are drafting a reply that will be sent from a real person's personal "
+    "Telegram account. Write in the first person as that person. Never state or "
+    "imply that you are an AI, a bot, or an assistant. Output only the message "
+    "text to send — no quotation marks, no labels, no commentary, no analysis."
+)
+
+_PERSONA_SECTIONS = (
+    ("purpose", "WHAT THIS ACCOUNT IS FOR"),
+    ("tone", "TONE AND STYLE"),
+    ("languages", "LANGUAGE"),
+    ("boundaries", "HARD RULES — NEVER BREAK THESE"),
+    ("signature_style", "SIGN-OFF"),
+)
+
+MAX_ATTEMPTS = 3
+BASE_BACKOFF_SECONDS = 2.0
+REQUEST_TIMEOUT_SECONDS = 60.0
+
+
+class AIResponderError(Exception):
+    """Raised for any failure that should surface in the admin panel."""
+
+
+def build_system_prompt(persona: dict[str, Any]) -> str:
+    """Assemble the system message; falls back to a neutral one when blank."""
+    sections = []
+    for key, label in _PERSONA_SECTIONS:
+        value = (persona.get(key) or "").strip()
+        if value:
+            sections.append(f"{label}:\n{value}")
+    if not sections:
+        return FALLBACK_SYSTEM_PROMPT
+    return PERSONA_HEADER + "\n\n" + "\n\n".join(sections)
+
+
+def _redact(text: str, secret: Optional[str]) -> str:
+    """Belt-and-braces: never let the key reach a log line or the admin panel."""
+    if secret and secret in text:
+        text = text.replace(secret, "***")
+    return text
+
+
+def _clip(text: str, limit: int = 300) -> str:
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
+def _retry_after(response: httpx.Response, attempt: int) -> float:
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return max(0.0, min(60.0, float(header)))
+        except ValueError:
+            pass
+    return BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+
+
+async def generate_reply(
+    *,
+    api_key: str,
+    history: list[dict[str, str]],
+    persona: dict[str, Any],
+    ai_config: dict[str, Any],
+    client: Optional[httpx.AsyncClient] = None,
+) -> str:
+    """Return the draft reply text, or raise AIResponderError with a safe message."""
+    if not api_key:
+        raise AIResponderError("DEEPSEEK_API_KEY is not set.")
+
+    messages = [{"role": "system", "content": build_system_prompt(persona)}]
+    messages.extend(history)
+    if len(messages) == 1:
+        raise AIResponderError("No conversation history to reply to.")
+
+    payload = {
+        "model": ai_config.get("model") or "deepseek-chat",
+        "messages": messages,
+        "max_tokens": ai_config.get("max_tokens", 400),
+        "temperature": ai_config.get("temperature", 1.0),
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
+    try:
+        last_error = "DeepSeek request failed."
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            delay = BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            try:
+                response = await http.post(API_URL, json=payload, headers=headers)
+            except httpx.TimeoutException:
+                last_error = "DeepSeek API timed out."
+            except httpx.HTTPError as exc:
+                last_error = _redact(
+                    f"Could not reach the DeepSeek API: {type(exc).__name__}.", api_key
+                )
+            else:
+                if response.status_code == 200:
+                    return _parse_reply(response, api_key)
+
+                detail = _clip(_redact(response.text, api_key))
+                if response.status_code == 429:
+                    last_error = f"DeepSeek rate limit (429). {detail}"
+                    delay = _retry_after(response, attempt)
+                elif response.status_code in (401, 403):
+                    # Not retryable — a bad key will not fix itself.
+                    raise AIResponderError(
+                        f"DeepSeek rejected the API key (HTTP {response.status_code}). "
+                        "Check that DEEPSEEK_API_KEY is correct."
+                    )
+                elif response.status_code >= 500:
+                    last_error = f"DeepSeek server error (HTTP {response.status_code}). {detail}"
+                    delay = _retry_after(response, attempt)
+                else:
+                    raise AIResponderError(
+                        f"DeepSeek API error (HTTP {response.status_code}). {detail}"
+                    )
+
+            if attempt < MAX_ATTEMPTS:
+                log.warning(
+                    "DeepSeek attempt %s/%s failed (%s); retrying in %.1fs",
+                    attempt, MAX_ATTEMPTS, last_error, delay,
+                )
+                await asyncio.sleep(delay)
+
+        raise AIResponderError(f"{last_error} Gave up after {MAX_ATTEMPTS} attempts.")
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
+def _parse_reply(response: httpx.Response, api_key: str) -> str:
+    try:
+        data = response.json()
+    except ValueError:
+        raise AIResponderError("DeepSeek returned a response that was not JSON.") from None
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise AIResponderError(
+            "DeepSeek response was missing choices[0].message.content."
+        ) from None
+    if not isinstance(content, str) or not content.strip():
+        raise AIResponderError("DeepSeek returned an empty reply.")
+    return content.strip()
