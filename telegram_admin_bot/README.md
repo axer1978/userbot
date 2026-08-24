@@ -41,7 +41,7 @@ latest state of the conversation.
 ```bash
 cd telegram_admin_bot
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -63,16 +63,27 @@ SESSION=your_telethon_string_session
 DEEPSEEK_API_KEY=your_deepseek_key
 ```
 
-If you don't have a `StringSession` yet, generate one once (it will ask for your
-phone number and login code):
+If you don't have a `StringSession` yet, generate one with the bundled helper.
+It logs you in and writes the value into `.env` for you — the string is ~350
+characters, and copying it out of a terminal by hand tends to wrap or truncate
+it:
 
 ```bash
-python -c "from telethon.sync import TelegramClient; from telethon.sessions import StringSession; \
-print(TelegramClient(StringSession(), int(input('API_ID: ')), input('API_HASH: ')).start().session.save())"
+python setup_session.py
 ```
 
-Copy the printed string into `SESSION`. Treat it like a password — it grants
-full access to your account.
+It asks for your `API_ID`, `API_HASH`, phone number (international format) and
+the login code Telegram sends to your app. Nothing secret is printed.
+
+To confirm `.env` is complete without revealing any values:
+
+```bash
+python setup_session.py --check
+```
+
+Treat the session string like a password — it grants full access to your
+account. If it is ever exposed, revoke it in Telegram under
+Settings → Devices, then run `setup_session.py` again.
 
 ## Run
 
@@ -150,6 +161,7 @@ main.py           entrypoint — Telethon client + FastAPI/uvicorn via asyncio.g
 database.py       SQLite helpers (aiosqlite; conversations.is_bot, messages.direction/status)
 ai_responder.py   builds the system prompt + message list, calls DeepSeek, returns the draft
 config_store.py   loads/validates/atomically saves config.json
+setup_session.py  one-time login helper; writes SESSION into .env (--check validates)
 config.json       your settings (persona fields blank until you fill them in)
 static/index.html the admin panel — plain HTML/CSS/JS, no build step
 assistant.db      created on first run
