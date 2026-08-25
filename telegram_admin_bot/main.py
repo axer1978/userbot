@@ -32,6 +32,7 @@ from telethon.tl.types import InputPeerUser, User
 
 import ai_responder
 import config_store
+from env_file import parse_env_file, recover_wrapped
 from database import (
     DIR_IN,
     DIR_OUT,
@@ -74,12 +75,27 @@ class Env:
     deepseek_key: str
 
 
+def _fail(message: str) -> "SystemExit":
+    print(f"\n{message}\n", file=sys.stderr)
+    return SystemExit(1)
+
+
 def load_env() -> Env:
     """Read credentials from the environment, or exit with a precise message."""
-    load_dotenv(BASE_DIR / ".env")
+    env_path = BASE_DIR / ".env"
+    load_dotenv(env_path)
     load_dotenv()
 
-    missing = [name for name in REQUIRED_ENV if not (os.getenv(name) or "").strip()]
+    # Read the file directly too, so a value that got wrapped across lines when
+    # it was pasted in can be stitched back together instead of arriving cut off.
+    file_values = parse_env_file(env_path)
+
+    resolved = {
+        name: recover_wrapped(name, (os.getenv(name) or "").strip(), file_values)
+        for name in REQUIRED_ENV
+    }
+
+    missing = [name for name in REQUIRED_ENV if not resolved[name]]
     if missing:
         print(
             "\n  Missing required environment variable(s): "
@@ -90,21 +106,33 @@ def load_env() -> Env:
         )
         raise SystemExit(1)
 
-    raw_api_id = os.environ["API_ID"].strip()
+    raw_api_id = resolved["API_ID"]
     try:
         api_id = int(raw_api_id)
     except ValueError:
-        print(
-            f"\n  API_ID must be an integer (got {raw_api_id!r}).\n",
-            file=sys.stderr,
+        raise _fail(
+            f"  API_ID must be the number from my.telegram.org (got {raw_api_id!r}).\n"
+            "  It is 7-8 digits — not the API hash, and not your DeepSeek key."
         )
-        raise SystemExit(1)
+
+    # Session strings are base64: any whitespace in there came from copy-paste.
+    session = "".join(resolved["SESSION"].split())
+    try:
+        StringSession(session)
+    except ValueError:
+        raise _fail(
+            f"  The SESSION value in .env is not a usable Telethon session string.\n"
+            f"  It is {len(session)} characters; a valid one is around 350 and starts with '1'.\n"
+            "  This usually means it was truncated when pasted in.\n\n"
+            "  Fix it by regenerating it — this writes the value into .env for you:\n"
+            "      python setup_session.py"
+        )
 
     env = Env()
     env.api_id = api_id
-    env.api_hash = os.environ["API_HASH"].strip()
-    env.session = os.environ["SESSION"].strip()
-    env.deepseek_key = os.environ["DEEPSEEK_API_KEY"].strip()
+    env.api_hash = resolved["API_HASH"]
+    env.session = session
+    env.deepseek_key = resolved["DEEPSEEK_API_KEY"]
     return env
 
 

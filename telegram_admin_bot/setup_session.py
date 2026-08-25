@@ -16,6 +16,8 @@ from pathlib import Path
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
+from env_file import parse_env_file
+
 ENV_PATH = Path(__file__).with_name(".env")
 EXAMPLE_PATH = Path(__file__).with_name(".env.example")
 REQUIRED = ("API_ID", "API_HASH", "SESSION", "DEEPSEEK_API_KEY")
@@ -24,17 +26,8 @@ EXAMPLE_VALUES = {"1234567"}
 
 
 def read_env() -> dict[str, str]:
-    """Parse .env into a dict, ignoring comments and blank lines."""
-    values: dict[str, str] = {}
-    if not ENV_PATH.exists():
-        return values
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
+    """Parse .env, rejoining any value that got wrapped across lines."""
+    return parse_env_file(ENV_PATH)
 
 
 def write_key(key: str, value: str) -> None:
@@ -72,8 +65,12 @@ def check() -> int:
             print(f"  {key:18} MISSING (still blank or the example value)")
             ok = False
         elif key == "SESSION":
-            valid = len(value) > 300 and value.startswith("1")
-            print(f"  {key:18} {len(value)} chars — {'looks valid' if valid else 'LOOKS WRONG'}")
+            try:
+                StringSession("".join(value.split()))
+                valid = True
+            except ValueError:
+                valid = False
+            print(f"  {key:18} {len(value)} chars — {'parses correctly' if valid else 'NOT A VALID SESSION'}")
             ok = ok and valid
         elif key == "API_ID":
             valid = value.isdigit()

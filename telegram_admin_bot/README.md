@@ -161,6 +161,7 @@ main.py           entrypoint — Telethon client + FastAPI/uvicorn via asyncio.g
 database.py       SQLite helpers (aiosqlite; conversations.is_bot, messages.direction/status)
 ai_responder.py   builds the system prompt + message list, calls DeepSeek, returns the draft
 config_store.py   loads/validates/atomically saves config.json
+env_file.py       tolerant .env reader; rejoins values that got wrapped when pasted
 setup_session.py  one-time login helper; writes SESSION into .env (--check validates)
 config.json       your settings (persona fields blank until you fill them in)
 static/index.html the admin panel — plain HTML/CSS/JS, no build step
