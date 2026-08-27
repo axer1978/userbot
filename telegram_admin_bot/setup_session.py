@@ -11,8 +11,10 @@ Nothing secret is ever printed.
 from __future__ import annotations
 
 import sys
+from getpass import getpass
 from pathlib import Path
 
+from telethon import errors
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
@@ -49,6 +51,97 @@ def write_key(key: str, value: str) -> None:
         lines.append(f"{key}={value}")
 
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# Telegram reports how it delivered the code. Saying so out loud saves people
+# watching for an SMS that was never going to arrive.
+_DELIVERY = {
+    "SentCodeTypeApp":
+        "the Telegram app itself.\n"
+        "     Open Telegram on your phone or another logged-in device and look for\n"
+        "     the chat named 'Telegram' (blue checkmark). The code is there.\n"
+        "     It was NOT sent by SMS.",
+    "SentCodeTypeSms": "SMS to your phone.",
+    "SentCodeTypeCall": "a phone call that reads the code aloud.",
+    "SentCodeTypeFlashCall": "a flash call — the code is part of the calling number.",
+    "SentCodeTypeMissedCall": "a missed call — the code is the last digits of the calling number.",
+    "SentCodeTypeEmailCode": "email.",
+}
+
+
+def describe_delivery(sent_code) -> str:
+    name = type(sent_code.type).__name__
+    return _DELIVERY.get(name, name)
+
+
+def do_login(api_id: int, api_hash: str) -> tuple[str, object]:
+    """Interactive login, returning (session_string, me). Raises SystemExit on failure."""
+    client = TelegramClient(StringSession(), api_id, api_hash)
+    client.connect()
+
+    phone = input("  Phone number (international, e.g. +34600123456): ").strip()
+    if not phone.startswith("+"):
+        print("  Note: no '+' — assuming you meant +" + phone)
+        phone = "+" + phone
+
+    try:
+        sent = client.send_code_request(phone)
+    except errors.FloodWaitError as exc:
+        minutes = exc.seconds / 60
+        raise SystemExit(
+            f"\n  Telegram is rate-limiting login attempts on this number.\n"
+            f"  Wait {exc.seconds} seconds (~{minutes:.0f} min) and try again.\n"
+            "  Requesting codes repeatedly makes this longer, so don't retry in the meantime.\n"
+        )
+    except errors.PhoneNumberInvalidError:
+        raise SystemExit(
+            f"\n  Telegram does not recognise {phone} as a valid number.\n"
+            "  Use international format: + then country code then the number,\n"
+            "  with no spaces or dashes.\n"
+        )
+    except errors.PhoneNumberBannedError:
+        raise SystemExit(f"\n  {phone} is banned from Telegram.\n")
+    except (errors.ApiIdInvalidError, errors.ApiIdPublishedFloodError):
+        raise SystemExit(
+            "\n  API_ID and API_HASH are not a matching pair.\n"
+            "  Recheck both at https://my.telegram.org -> API development tools.\n"
+        )
+
+    print(f"\n  Telegram sent the code via {describe_delivery(sent)}\n")
+
+    for attempt in range(3):
+        code = input("  Login code (or type 'sms' to have it resent by SMS): ").strip()
+
+        if code.lower() == "sms":
+            try:
+                sent = client.send_code_request(phone, force_sms=True)
+                print(f"\n  Resent via {describe_delivery(sent)}\n")
+            except errors.FloodWaitError as exc:
+                raise SystemExit(f"\n  Rate-limited; wait {exc.seconds} seconds.\n")
+            except Exception as exc:
+                print(f"  Could not resend by SMS: {type(exc).__name__}")
+            continue
+
+        try:
+            client.sign_in(phone, code)
+            break
+        except errors.SessionPasswordNeededError:
+            password = getpass("  Two-step verification password: ")
+            client.sign_in(password=password)
+            break
+        except errors.PhoneCodeInvalidError:
+            print(f"  That code is not right. {2 - attempt} attempt(s) left.")
+        except errors.PhoneCodeExpiredError:
+            raise SystemExit(
+                "\n  That code has expired. Run setup_session.py again for a fresh one.\n"
+            )
+    else:
+        raise SystemExit("\n  Too many incorrect codes. Run setup_session.py again.\n")
+
+    session_string = client.session.save()
+    me = client.get_me()
+    client.disconnect()
+    return session_string, me
 
 
 def check() -> int:
@@ -105,12 +198,8 @@ def main() -> int:
         print("  API_HASH is required.")
         return 1
 
-    print("\n  Logging in. Enter your phone in international form (e.g. +34600123456),")
-    print("  then the code Telegram sends to your app.\n")
-
-    with TelegramClient(StringSession(), int(api_id_raw), api_hash) as client:
-        session_string = client.session.save()
-        me = client.get_me()
+    print()
+    session_string, me = do_login(int(api_id_raw), api_hash)
 
     write_key("API_ID", api_id_raw)
     write_key("API_HASH", api_hash)
