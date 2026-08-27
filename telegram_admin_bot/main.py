@@ -338,6 +338,7 @@ async def draft_worker(chat_id: int) -> None:
         await hub.broadcast(
             {"type": "drafting", "chat_id": chat_id, "delay_seconds": round(delay, 1)}
         )
+        log.info("  drafting a reply for chat %s in %.0fs…", chat_id, delay)
         await asyncio.sleep(delay)
 
         # Re-read state after the delay — I may have paused the chat meanwhile.
@@ -432,15 +433,27 @@ async def on_incoming(event: events.NewMessage.Event) -> None:
     if row is not None:
         await push_message(row)
 
+    log.info("DM from %s%s (chat %s): %s", name, " [bot]" if is_bot else "", chat_id,
+             f"{len(text)} chars" if has_text else "non-text message")
+
+    # Each early return is logged: the terminal should always explain why a
+    # message did not get a reply.
     if not has_text:
+        log.info("  no text to reply to — skipping.")
         return
     if config["behavior"].get("global_pause"):
+        log.info("  automation is globally paused — skipping.")
         return
 
     conversation = await db.get_conversation(chat_id)
     if conversation and conversation["automation_paused"]:
+        log.info("  this conversation is paused — skipping.")
         return
     if not within_active_hours(config["timing"]):
+        timing = config["timing"]
+        log.info("  outside active hours (%s-%s %s) — skipping.",
+                 timing.get("active_hours_start"), timing.get("active_hours_end"),
+                 timing.get("timezone"))
         return
 
     schedule_draft(chat_id)
@@ -688,7 +701,8 @@ async def run_telegram() -> None:
             telegram_state["connected"] = True
             telegram_state["error"] = None
             backoff = 5
-            log.info("Telegram connected as %s.", me_info["name"])
+            log.info("Telegram connected as %s. Listening for private messages "
+                     "(send a DM from another account to test).", me_info["name"])
             await hub.broadcast({"type": "status", "status": await api_status()})
 
             await client.run_until_disconnected()
