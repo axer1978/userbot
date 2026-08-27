@@ -60,3 +60,8 @@ def recover_wrapped(name: str, env_value: str, file_values: dict[str, str]) -> s
     if file_value and len(file_value) > len(env_value) and file_value.startswith(env_value):
         return file_value
     return env_value
+
+
+def is_placeholder(value: str) -> bool:
+    """True when a value is still the untouched example from .env.example."""
+    return value.startswith("your_") or value == "1234567"

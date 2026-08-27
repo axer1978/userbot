@@ -32,7 +32,7 @@ from telethon.tl.types import InputPeerUser, User
 
 import ai_responder
 import config_store
-from env_file import parse_env_file, recover_wrapped
+from env_file import is_placeholder, parse_env_file, recover_wrapped
 from database import (
     DIR_IN,
     DIR_OUT,
@@ -97,14 +97,31 @@ def load_env() -> Env:
 
     missing = [name for name in REQUIRED_ENV if not resolved[name]]
     if missing:
-        print(
-            "\n  Missing required environment variable(s): "
+        raise _fail(
+            "  Missing required environment variable(s): "
             + ", ".join(missing)
             + "\n\n  Set them in your shell or in a .env file next to main.py."
-            + "\n  See .env.example for the expected names.\n",
-            file=sys.stderr,
+            + "\n  See .env.example for the expected names."
         )
-        raise SystemExit(1)
+
+    # A value copied straight from .env.example is not a credential.
+    untouched = [name for name in REQUIRED_ENV if is_placeholder(resolved[name])]
+    if untouched:
+        lines = [
+            "  These are still the placeholder values from .env.example: "
+            + ", ".join(untouched),
+            "",
+            "  Open .env and replace them with your own credentials.",
+        ]
+        if "SESSION" in untouched or "API_ID" in untouched or "API_HASH" in untouched:
+            lines += [
+                "",
+                "  For API_ID, API_HASH and SESSION, this fills them in for you:",
+                "      python setup_session.py",
+            ]
+        if "DEEPSEEK_API_KEY" in untouched:
+            lines += ["", "  Get a DeepSeek key at https://platform.deepseek.com"]
+        raise _fail("\n".join(lines))
 
     raw_api_id = resolved["API_ID"]
     try:
