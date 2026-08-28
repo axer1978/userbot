@@ -24,6 +24,13 @@
     "max_tokens": 400,
     "temperature": 1.0
   },
+  "human": {
+    "adaptive_style": true,
+    "typing_indicator": true,
+    "typing_speed_cps": 12,
+    "typing_max_seconds": 25,
+    "mark_read": true
+  },
   "outreach": {
     "min_gap_seconds": 90,
     "max_gap_seconds": 300,

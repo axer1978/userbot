@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Optional
 
 import httpx
@@ -53,6 +54,63 @@ def build_system_prompt(persona: dict[str, Any]) -> str:
     if not sections:
         return FALLBACK_SYSTEM_PROMPT
     return PERSONA_HEADER + "\n\n" + "\n\n".join(sections)
+
+
+# Broad emoji blocks — enough to tell "uses emoji" from "doesn't".
+_EMOJI = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF❤️]"
+)
+
+
+def describe_style(history: list[dict[str, str]]) -> str:
+    """A short brief on how the other person writes, so the reply can match it.
+
+    Built only from their own messages — mirroring our own past replies would
+    just entrench whatever the model did first.
+    """
+    theirs = [m["content"] for m in history if m["role"] == "user" and m["content"].strip()]
+    if len(theirs) < 2:
+        return ""
+
+    lengths = [len(t) for t in theirs]
+    avg_len = sum(lengths) / len(lengths)
+    avg_words = sum(len(t.split()) for t in theirs) / len(theirs)
+    with_emoji = sum(1 for t in theirs if _EMOJI.search(t))
+    # Do they start sentences with a capital, and end with punctuation?
+    capitalised = sum(1 for t in theirs if t[:1].isupper())
+    punctuated = sum(1 for t in theirs if t.rstrip()[-1:] in ".!?")
+
+    notes = []
+    if avg_len < 25:
+        notes.append(f"very short messages (about {avg_len:.0f} characters, "
+                     f"{avg_words:.0f} words) — often just a few words")
+    elif avg_len < 80:
+        notes.append(f"short messages (about {avg_len:.0f} characters)")
+    elif avg_len < 200:
+        notes.append(f"medium-length messages (about {avg_len:.0f} characters)")
+    else:
+        notes.append(f"long, detailed messages (about {avg_len:.0f} characters)")
+
+    ratio = with_emoji / len(theirs)
+    if ratio > 0.5:
+        notes.append("emoji in most messages")
+    elif ratio > 0.15:
+        notes.append("the occasional emoji")
+    else:
+        notes.append("no emoji")
+
+    if capitalised / len(theirs) < 0.4:
+        notes.append("mostly lower-case, not much capitalisation")
+    if punctuated / len(theirs) < 0.3:
+        notes.append("often no full stop at the end")
+
+    return (
+        "HOW THIS PERSON WRITES: " + "; ".join(notes) + ".\n"
+        "Match them. Write about the same length — if they send one line, send one "
+        "line, never a paragraph. Mirror their level of formality, their emoji use "
+        "and their punctuation habits, and always reply in the language they are "
+        "writing in."
+    )
 
 
 async def generate_opener(
@@ -114,12 +172,19 @@ async def generate_reply(
     persona: dict[str, Any],
     ai_config: dict[str, Any],
     client: Optional[httpx.AsyncClient] = None,
+    adaptive_style: bool = True,
 ) -> str:
     """Return the draft reply text, or raise AIResponderError with a safe message."""
     if not api_key:
         raise AIResponderError("DEEPSEEK_API_KEY is not set.")
 
-    messages = [{"role": "system", "content": build_system_prompt(persona)}]
+    system = build_system_prompt(persona)
+    if adaptive_style:
+        style = describe_style(history)
+        if style:
+            system += "\n\n" + style
+
+    messages = [{"role": "system", "content": system}]
     messages.extend(history)
     if len(messages) == 1:
         raise AIResponderError("No conversation history to reply to.")

@@ -41,6 +41,14 @@ DEFAULTS: dict[str, Any] = {
         "max_tokens": 400,
         "temperature": 1.0,
     },
+    # Behaviour that makes the account read like a person rather than a script.
+    "human": {
+        "adaptive_style": True,
+        "typing_indicator": True,
+        "typing_speed_cps": 12,
+        "typing_max_seconds": 25,
+        "mark_read": True,
+    },
     # Messages the assistant starts, to people already in your contacts.
     "outreach": {
         # Telegram rate-limits and penalises bursts of new conversations, so
@@ -137,6 +145,17 @@ def normalize(raw: Any) -> dict[str, Any]:
     behavior = cfg["behavior"]
     for field, default_value in DEFAULTS["behavior"].items():
         behavior[field] = _as_bool(behavior.get(field), default_value)
+
+    human = cfg["human"]
+    hd = DEFAULTS["human"]
+    for flag in ("adaptive_style", "typing_indicator", "mark_read"):
+        human[flag] = _as_bool(human.get(flag), hd[flag])
+    human["typing_speed_cps"] = _as_int(
+        human.get("typing_speed_cps"), hd["typing_speed_cps"], 1, 100
+    )
+    human["typing_max_seconds"] = _as_int(
+        human.get("typing_max_seconds"), hd["typing_max_seconds"], 1, 300
+    )
 
     out = cfg["outreach"]
     d = DEFAULTS["outreach"]

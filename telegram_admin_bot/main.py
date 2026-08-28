@@ -290,12 +290,71 @@ async def push_error(chat_id: Optional[int], text: str) -> None:
     )
 
 
-async def send_as_me(chat_id: int, text: str, draft_id: Optional[int] = None) -> dict[str, Any]:
+def typing_seconds(text: str) -> float:
+    """How long a person would plausibly take to type this."""
+    human = config["human"]
+    cps = max(1, int(human.get("typing_speed_cps", 12)))
+    cap = int(human.get("typing_max_seconds", 25))
+    return max(1.0, min(cap, len(text) / cps))
+
+
+async def deliver(peer: Any, chat_id: int, text: str, typing: bool) -> Any:
+    """Send the message, optionally typing first.
+
+    The send happens inside the typing action so the indicator runs right up to
+    the moment the message lands, rather than blinking off just before it.
+    """
+    if not (typing and config["human"].get("typing_indicator", True)):
+        return await client.send_message(peer, text)
+
+    seconds = typing_seconds(text)
+    log.info("  typing for %.0fs…", seconds)
+
+    result = None
+    attempted = False
+    try:
+        async with client.action(chat_id, "typing"):
+            await asyncio.sleep(seconds)
+            attempted = True
+            result = await client.send_message(peer, text)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if result is not None:
+            return result  # sent fine; only tearing the indicator down failed
+        if attempted:
+            raise  # a real send failure — the caller reports it
+        # The indicator itself is unavailable. It is cosmetic; send regardless.
+        log.warning("Typing indicator unavailable (%s); sending anyway.", type(exc).__name__)
+    else:
+        return result
+
+    return await client.send_message(peer, text)
+
+
+async def mark_read(chat_id: int, message_id: Optional[int] = None) -> None:
+    """Mark their message read, so they see the second tick."""
+    if not config["human"].get("mark_read", True):
+        return
+    try:
+        await client.send_read_acknowledge(chat_id, max_id=message_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning("Could not mark chat %s read: %s", chat_id, type(exc).__name__)
+
+
+async def send_as_me(
+    chat_id: int,
+    text: str,
+    draft_id: Optional[int] = None,
+    typing: bool = False,
+) -> dict[str, Any]:
     """Send a message through the userbot and record it as outgoing/sent."""
     peer = await resolve_peer(chat_id)
     in_flight_sends.setdefault(chat_id, []).append(text)
     try:
-        sent = await client.send_message(peer, text)
+        sent = await deliver(peer, chat_id, text, typing)
     finally:
         pending = in_flight_sends.get(chat_id) or []
         if text in pending:
@@ -365,16 +424,21 @@ async def draft_worker(chat_id: int) -> None:
             log.info("No usable history for chat %s; skipping draft.", chat_id)
             return
 
+        # Read it before writing back, the way a person would: the delay above
+        # is the time before opening the chat, this is opening it.
+        await mark_read(chat_id)
+
         text = await ai_responder.generate_reply(
             api_key=env.deepseek_key,
             history=history,
             persona=config["persona"],
             ai_config=config["ai"],
             client=http_client,
+            adaptive_style=config["human"].get("adaptive_style", True),
         )
 
         if config["behavior"].get("auto_send"):
-            await send_as_me(chat_id, text)
+            await send_as_me(chat_id, text, typing=True)
             log.info("Auto-sent AI reply to chat %s.", chat_id)
         else:
             row = await db.record_message(
@@ -487,7 +551,7 @@ async def process_outreach(item: dict[str, Any]) -> None:
         return
 
     try:
-        await send_as_me(chat_id, text)
+        await send_as_me(chat_id, text, typing=True)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         await db.update_outreach(outreach_id, status=OUT_FAILED, error=detail)

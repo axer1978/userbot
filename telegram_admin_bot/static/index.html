@@ -261,6 +261,28 @@
       </fieldset>
 
       <fieldset>
+        <legend>Sounding human</legend>
+        <div class="field check">
+          <input id="h-adaptive" type="checkbox">
+          <label for="h-adaptive">Match how each person writes (length, emoji, formality, language)</label>
+        </div>
+        <div class="field check">
+          <input id="h-typing" type="checkbox">
+          <label for="h-typing">Show “typing…” before sending</label>
+        </div>
+        <div class="field check">
+          <input id="h-read" type="checkbox">
+          <label for="h-read">Mark their message read, so they get the second tick</label>
+        </div>
+        <div class="row">
+          <div class="field"><label for="h-cps">Typing speed (characters/second)</label>
+            <input id="h-cps" type="number" min="1" max="100" step="1"></div>
+          <div class="field"><label for="h-tmax">Longest it will ever type (s)</label>
+            <input id="h-tmax" type="number" min="1" max="300" step="1"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>AI</legend>
         <div class="row">
           <div class="field"><label for="a-model">Model</label><input id="a-model" type="text"></div>
@@ -676,6 +698,12 @@ function fillSettings(cfg) {
   $("b-auto").checked = cfg.behavior.auto_send;
   $("b-log").checked = cfg.behavior.log_all_messages;
 
+  $("h-adaptive").checked = cfg.human.adaptive_style;
+  $("h-typing").checked = cfg.human.typing_indicator;
+  $("h-read").checked = cfg.human.mark_read;
+  $("h-cps").value = cfg.human.typing_speed_cps;
+  $("h-tmax").value = cfg.human.typing_max_seconds;
+
   $("a-model").value = cfg.ai.model;
   $("a-tokens").value = cfg.ai.max_tokens;
   $("a-temp").value = cfg.ai.temperature;
@@ -703,6 +731,13 @@ function collectSettings() {
       log_all_messages: $("b-log").checked,
       // Preserved here so saving Settings can't silently clear the global pause.
       global_pause: state.config ? state.config.behavior.global_pause : false,
+    },
+    human: {
+      adaptive_style: $("h-adaptive").checked,
+      typing_indicator: $("h-typing").checked,
+      mark_read: $("h-read").checked,
+      typing_speed_cps: Number($("h-cps").value),
+      typing_max_seconds: Number($("h-tmax").value),
     },
     ai: {
       model: $("a-model").value,

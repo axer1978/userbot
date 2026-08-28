@@ -144,6 +144,33 @@ restart.
 Sending a message from your phone or Telegram Desktop shows up in the panel too,
 so the thread stays complete.
 
+## Sounding like a person
+
+Three things under **Settings → Sounding human**, all on by default:
+
+**Adaptive style.** Before drafting, the assistant profiles how *that person*
+writes — from their own messages only, never from its own past replies — and
+tells the model to match it: message length, emoji use, capitalisation,
+whether they bother with full stops, and the language they are writing in. If
+someone sends three-word lower-case lines, it stops replying in paragraphs.
+Needs at least two of their messages; below that it just uses your persona.
+
+**Typing indicator.** Before an automatic message goes out, the chat shows
+"typing…" for as long as writing that text would plausibly take — length ÷
+`typing_speed_cps` (default 12 characters/second), capped at
+`typing_max_seconds` (default 25). The message is sent while the indicator is
+still up, so it doesn't blink off and leave a gap. Messages you send yourself,
+and drafts you approve by hand, skip this — you are already in control and
+should not wait on it.
+
+**Read receipts.** After the delay and before writing, the incoming message is
+marked read, so the sender gets their second tick. That ordering is the point:
+a pause, then read, then typing, then the reply — the shape of someone picking
+up their phone.
+
+Neither the indicator nor the read receipt can block a message: if Telegram
+refuses either, it is logged and the message still goes out.
+
 ## Messaging your contacts first
 
 The **Outreach** button opens a panel for starting conversations rather than
