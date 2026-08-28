@@ -1,0 +1,27 @@
+{
+  "persona": {
+    "purpose": "",
+    "tone": "",
+    "languages": "",
+    "boundaries": "",
+    "signature_style": ""
+  },
+  "timing": {
+    "min_delay_seconds": 20,
+    "max_delay_seconds": 90,
+    "active_hours_enabled": false,
+    "active_hours_start": "09:00",
+    "active_hours_end": "21:00",
+    "timezone": "UTC"
+  },
+  "behavior": {
+    "auto_send": false,
+    "log_all_messages": true,
+    "global_pause": false
+  },
+  "ai": {
+    "model": "deepseek-chat",
+    "max_tokens": 400,
+    "temperature": 1.0
+  }
+}

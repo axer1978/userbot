@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telegram AI Assistant</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234c8dff'/%3E%3Cpath d='M7 16.5l17-7-6 16-3.5-6z' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0e1116;
+    --bg-raised: #151a21;
+    --bg-hover: #1c232c;
+    --border: #262d38;
+    --text: #e6edf3;
+    --muted: #8b98a8;
+    --accent: #4c8dff;
+    --accent-dim: #1f3557;
+    --in: #1e2530;
+    --out: #21406b;
+    --pending: #4a3a12;
+    --pending-border: #a9821f;
+    --danger: #f2565a;
+    --ok: #46b978;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font: inherit; cursor: pointer; }
+  input, textarea, select {
+    font: inherit; color: var(--text); background: var(--bg); width: 100%;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  textarea { resize: vertical; }
+
+  /* ---------- top bar ---------- */
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--bg-raised); flex-shrink: 0;
+  }
+  .brand { font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); display: inline-block; }
+  .dot.on { background: var(--ok); }
+  .status { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 7px; }
+  .btn {
+    background: var(--bg-hover); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 13px;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.warn { color: var(--danger); }
+  .btn.small { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+  .btn.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+  /* ---------- layout ---------- */
+  main { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 320px; flex-shrink: 0; border-right: 1px solid var(--border);
+    background: var(--bg-raised); overflow-y: auto;
+  }
+  .conv {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    border-bottom: 1px solid var(--border); padding: 11px 14px; color: var(--text);
+  }
+  .conv:hover { background: var(--bg-hover); }
+  .conv.active { background: var(--accent-dim); }
+  .conv-top { display: flex; align-items: center; gap: 7px; }
+  .conv-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv-time { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .conv-preview { color: var(--muted); font-size: 12.5px; margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv-meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  .badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge.bot { border-color: #6b4ea8; color: #b393f0; }
+  .badge.paused { border-color: var(--pending-border); color: #e0b84a; }
+  .unread {
+    background: var(--accent); color: #fff; border-radius: 999px;
+    font-size: 11px; padding: 0 6px; min-width: 18px; text-align: center;
+  }
+
+  #panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #thread-header {
+    display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+    border-bottom: 1px solid var(--border); background: var(--bg-raised); flex-shrink: 0;
+  }
+  #thread { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .empty { margin: auto; color: var(--muted); text-align: center; max-width: 420px; }
+
+  .msg { max-width: 68%; padding: 9px 13px; border-radius: var(--radius); white-space: pre-wrap; word-wrap: break-word; }
+  .msg .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 3px; }
+  .msg .time { font-size: 10.5px; color: var(--muted); margin-top: 5px; }
+  .msg.in { background: var(--in); align-self: flex-start; border-bottom-left-radius: 3px; }
+  .msg.out { background: var(--out); align-self: flex-end; border-bottom-right-radius: 3px; }
+  .msg.rejected { background: var(--in); align-self: flex-end; opacity: .5; text-decoration: line-through; }
+  .msg.error {
+    align-self: center; max-width: 88%; background: #3a1a1c;
+    border: 1px solid var(--danger); color: #ffd7d8; font-size: 13px;
+  }
+  .draft {
+    align-self: flex-end; max-width: 68%; background: var(--pending);
+    border: 1px solid var(--pending-border); border-radius: var(--radius); padding: 11px 13px;
+  }
+  .draft .label { color: #f0cf72; }
+  .draft-actions { display: flex; gap: 7px; margin-top: 9px; flex-wrap: wrap; }
+  .draft textarea { margin-top: 8px; background: #241d09; }
+  .typing { align-self: flex-end; color: var(--muted); font-size: 12px; font-style: italic; }
+
+  #composer { display: flex; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg-raised); }
+  #composer textarea { min-height: 42px; max-height: 160px; }
+
+  /* ---------- settings ---------- */
+  #settings {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px;
+  }
+  #settings.open { display: flex; }
+  .sheet { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 14px;
+    width: 100%; max-width: 720px; padding: 24px; }
+  .sheet h2 { margin: 0 0 4px; font-size: 18px; }
+  .sheet .hint { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px 18px; margin: 0 0 16px; }
+  legend { padding: 0 6px; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }
+  .field { margin-bottom: 13px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > .field { flex: 1; min-width: 150px; }
+  .check { display: flex; align-items: center; gap: 9px; }
+  .check input { width: auto; }
+  .check label { margin: 0; color: var(--text); font-size: 14px; }
+  .sheet-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+
+  /* clear of the composer so toasts never cover the Send button */
+  #toasts { position: fixed; right: 16px; bottom: 84px; display: flex; flex-direction: column; gap: 8px; z-index: 50; align-items: flex-end; }
+  .toast {
+    background: #3a1a1c; border: 1px solid var(--danger); color: #ffd7d8;
+    padding: 10px 14px; border-radius: 9px; max-width: 380px; font-size: 13px;
+  }
+  .toast.info { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Telegram AI Assistant</span>
+  <span class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting…</span></span>
+  <span class="spacer"></span>
+  <span id="mode" class="status"></span>
+  <button id="global-pause" class="btn">Pause all</button>
+  <button id="open-settings" class="btn">Settings</button>
+</header>
+
+<main>
+  <aside id="sidebar"></aside>
+  <section id="panel">
+    <div id="thread-header"><span style="color:var(--muted)">No conversation selected</span></div>
+    <div id="thread"><div class="empty">Incoming DMs appear here as they arrive.</div></div>
+  </section>
+</main>
+
+<div id="settings">
+  <div class="sheet">
+    <h2>Settings</h2>
+    <p class="hint">Saved straight to <code>config.json</code> — no restart needed. Persona fields start blank;
+      fill them in before expecting useful replies.</p>
+    <form id="settings-form">
+      <fieldset>
+        <legend>Persona</legend>
+        <div class="field"><label for="p-purpose">Purpose — what is this assistant for?</label>
+          <textarea id="p-purpose" rows="3"></textarea></div>
+        <div class="field"><label for="p-tone">Tone &amp; style</label>
+          <textarea id="p-tone" rows="3"></textarea></div>
+        <div class="field"><label for="p-languages">Languages</label>
+          <textarea id="p-languages" rows="2"></textarea></div>
+        <div class="field"><label for="p-boundaries">Boundaries — hard rules it must never break</label>
+          <textarea id="p-boundaries" rows="3"></textarea></div>
+        <div class="field"><label for="p-signature">Sign-off behaviour</label>
+          <textarea id="p-signature" rows="2"></textarea></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Timing</legend>
+        <div class="row">
+          <div class="field"><label for="t-min">Min delay (seconds)</label>
+            <input id="t-min" type="number" min="0" step="1"></div>
+          <div class="field"><label for="t-max">Max delay (seconds)</label>
+            <input id="t-max" type="number" min="0" step="1"></div>
+        </div>
+        <div class="field check">
+          <input id="t-hours-on" type="checkbox">
+          <label for="t-hours-on">Only draft replies during active hours</label>
+        </div>
+        <div class="row">
+          <div class="field"><label for="t-start">Active from</label><input id="t-start" type="time"></div>
+          <div class="field"><label for="t-end">Active until</label><input id="t-end" type="time"></div>
+          <div class="field"><label for="t-tz">Timezone (IANA, e.g. Europe/Berlin)</label>
+            <input id="t-tz" type="text" placeholder="UTC"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Behaviour</legend>
+        <div class="field check">
+          <input id="b-auto" type="checkbox">
+          <label for="b-auto">Auto-send AI replies without my approval</label>
+        </div>
+        <div class="field check">
+          <input id="b-log" type="checkbox">
+          <label for="b-log">Log all messages to the database</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>AI</legend>
+        <div class="row">
+          <div class="field"><label for="a-model">Model</label><input id="a-model" type="text"></div>
+          <div class="field"><label for="a-tokens">Max tokens</label>
+            <input id="a-tokens" type="number" min="1" max="8192" step="1"></div>
+          <div class="field"><label for="a-temp">Temperature</label>
+            <input id="a-temp" type="number" min="0" max="2" step="0.1"></div>
+        </div>
+      </fieldset>
+
+      <div class="sheet-actions">
+        <button type="button" id="close-settings" class="btn">Cancel</button>
+        <button type="submit" class="btn primary">Save settings</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+
+const state = {
+  conversations: [],
+  messages: [],
+  activeChatId: null,
+  config: null,
+  status: null,
+  drafting: new Set(),
+};
+
+const $ = (id) => document.getElementById(id);
+
+/* ------------------------------------------------------------------ utils */
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;   // textContent: never inject HTML
+  return node;
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " +
+      d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function toast(text, kind) {
+  const node = el("div", "toast" + (kind === "info" ? " info" : ""), text);
+  $("toasts").appendChild(node);
+  setTimeout(() => node.remove(), kind === "info" ? 4000 : 9000);
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+/* --------------------------------------------------------------- sidebar */
+
+function renderSidebar() {
+  const sidebar = $("sidebar");
+  sidebar.textContent = "";
+
+  if (!state.conversations.length) {
+    const empty = el("div", "empty", "No conversations yet.");
+    empty.style.padding = "24px 16px";
+    sidebar.appendChild(empty);
+    return;
+  }
+
+  for (const conv of state.conversations) {
+    const item = el("button", "conv" + (conv.chat_id === state.activeChatId ? " active" : ""));
+
+    const top = el("div", "conv-top");
+    top.appendChild(el("span", "conv-name", conv.display_name || String(conv.chat_id)));
+    top.appendChild(el("span", "conv-time", fmtTime(conv.last_message_at)));
+    item.appendChild(top);
+
+    item.appendChild(el("div", "conv-preview", conv.last_message_preview || "—"));
+
+    const meta = el("div", "conv-meta");
+    if (conv.is_bot) meta.appendChild(el("span", "badge bot", "bot"));
+    if (conv.automation_paused) meta.appendChild(el("span", "badge paused", "paused"));
+    if (conv.unread > 0) meta.appendChild(el("span", "unread", String(conv.unread)));
+
+    const spacer = el("span"); spacer.style.flex = "1";
+    meta.appendChild(spacer);
+
+    const toggle = el("span", "btn small" + (conv.automation_paused ? " on" : ""),
+                      conv.automation_paused ? "Resume" : "Pause");
+    toggle.setAttribute("role", "button");
+    toggle.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      try {
+        await api("POST", `/api/conversations/${conv.chat_id}/pause`,
+                  { paused: !conv.automation_paused });
+      } catch (err) { toast(err.message); }
+    });
+    meta.appendChild(toggle);
+    item.appendChild(meta);
+
+    item.addEventListener("click", () => selectConversation(conv.chat_id));
+    sidebar.appendChild(item);
+  }
+}
+
+/* ---------------------------------------------------------------- thread */
+
+function conversationById(chatId) {
+  return state.conversations.find((c) => c.chat_id === chatId) || null;
+}
+
+function renderThreadHeader() {
+  const header = $("thread-header");
+  header.textContent = "";
+  const conv = conversationById(state.activeChatId);
+  if (!conv) {
+    const span = el("span", null, "No conversation selected");
+    span.style.color = "var(--muted)";
+    header.appendChild(span);
+    return;
+  }
+
+  const name = el("strong", null, conv.display_name || String(conv.chat_id));
+  header.appendChild(name);
+  if (conv.username) {
+    const handle = el("span", null, "@" + conv.username);
+    handle.style.color = "var(--muted)";
+    header.appendChild(handle);
+  }
+  if (conv.is_bot) header.appendChild(el("span", "badge bot", "bot"));
+
+  const spacer = el("span", "spacer");
+  header.appendChild(spacer);
+
+  const toggle = el("button", "btn small" + (conv.automation_paused ? " on" : ""),
+                    conv.automation_paused ? "Automation paused" : "Pause automation");
+  toggle.addEventListener("click", async () => {
+    try {
+      await api("POST", `/api/conversations/${conv.chat_id}/pause`,
+                { paused: !conv.automation_paused });
+    } catch (err) { toast(err.message); }
+  });
+  header.appendChild(toggle);
+}
+
+function renderThread() {
+  const thread = $("thread");
+  const stick = thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 60;
+  thread.textContent = "";
+
+  if (state.activeChatId === null) {
+    thread.appendChild(el("div", "empty", "Incoming DMs appear here as they arrive."));
+    return;
+  }
+
+  for (const msg of state.messages) {
+    thread.appendChild(msg.status === "pending_approval" ? draftNode(msg) : messageNode(msg));
+  }
+
+  if (state.drafting.has(state.activeChatId)) {
+    thread.appendChild(el("div", "typing", "AI is preparing a reply…"));
+  }
+
+  if (stick) thread.scrollTop = thread.scrollHeight;
+}
+
+function messageNode(msg) {
+  if (msg.status === "error") {
+    const node = el("div", "msg error");
+    node.appendChild(el("div", "label", "error"));
+    node.appendChild(el("div", null, msg.text));
+    node.appendChild(el("div", "time", fmtTime(msg.created_at)));
+    return node;
+  }
+
+  const isIn = msg.direction === "in";
+  const cls = msg.status === "rejected" ? "msg rejected" : (isIn ? "msg in" : "msg out");
+  const node = el("div", cls);
+  node.appendChild(el("div", "label",
+    isIn ? "them" : (msg.status === "rejected" ? "rejected draft" : "me")));
+  node.appendChild(el("div", null, msg.text));
+  node.appendChild(el("div", "time", fmtTime(msg.created_at)));
+  return node;
+}
+
+// Text of drafts currently being edited, keyed by draft id, so a re-render
+// triggered by an unrelated incoming message doesn't discard my edit.
+const draftEdits = new Map();
+
+function draftNode(msg) {
+  const node = el("div", "draft");
+  node.appendChild(el("div", "label", "AI draft — awaiting approval"));
+
+  const body = el("div", null, msg.text);
+  const box = el("textarea");
+  box.rows = 4;
+  box.value = draftEdits.has(msg.id) ? draftEdits.get(msg.id) : msg.text;
+  box.addEventListener("input", () => draftEdits.set(msg.id, box.value));
+
+  let editing = draftEdits.has(msg.id);
+  node.appendChild(body);
+  node.appendChild(box);
+
+  const actions = el("div", "draft-actions");
+  const approve = el("button", "btn small primary", "Approve & Send");
+  const edit = el("button", "btn small", "Edit then Send");
+  const reject = el("button", "btn small warn", "Reject");
+
+  const showEditor = () => {
+    editing = true;
+    body.style.display = "none";
+    box.style.display = "block";
+    approve.style.display = "none";
+    edit.textContent = "Send edited";
+    edit.classList.add("primary");
+  };
+  const showPreview = () => {
+    editing = false;
+    body.style.display = "";
+    box.style.display = "none";
+  };
+
+  approve.addEventListener("click", () => sendDraft(msg.id, null, approve));
+  edit.addEventListener("click", () => {
+    if (!editing) { showEditor(); box.focus(); return; }
+    sendDraft(msg.id, box.value, edit);
+  });
+  reject.addEventListener("click", async () => {
+    reject.disabled = true;
+    draftEdits.delete(msg.id);
+    try { await api("POST", `/api/drafts/${msg.id}/reject`); }
+    catch (err) { toast(err.message); reject.disabled = false; }
+  });
+
+  actions.appendChild(approve);
+  actions.appendChild(edit);
+  actions.appendChild(reject);
+  node.appendChild(actions);
+  node.appendChild(el("div", "time", fmtTime(msg.created_at)));
+
+  if (editing) showEditor(); else showPreview();
+  return node;
+}
+
+async function sendDraft(draftId, text, button) {
+  button.disabled = true;
+  try {
+    await api("POST", `/api/drafts/${draftId}/approve`, text === null ? {} : { text });
+    draftEdits.delete(draftId);
+  } catch (err) {
+    toast(err.message);
+    button.disabled = false;
+  }
+}
+
+/* ----------------------------------------------------------- composer */
+
+function renderComposer() {
+  let composer = $("composer");
+  if (state.activeChatId === null) {
+    if (composer) composer.remove();
+    return;
+  }
+  if (composer) return;
+
+  composer = el("div");
+  composer.id = "composer";
+  const box = el("textarea");
+  box.placeholder = "Write a message as yourself…";
+  box.rows = 1;
+  const send = el("button", "btn primary", "Send");
+
+  const submit = async () => {
+    const text = box.value.trim();
+    if (!text) return;
+    send.disabled = true;
+    try {
+      await api("POST", `/api/conversations/${state.activeChatId}/send`, { text });
+      box.value = "";
+    } catch (err) { toast(err.message); }
+    send.disabled = false;
+    box.focus();
+  };
+
+  send.addEventListener("click", submit);
+  box.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
+  });
+
+  composer.appendChild(box);
+  composer.appendChild(send);
+  $("panel").appendChild(composer);
+}
+
+/* ------------------------------------------------------------ selection */
+
+async function selectConversation(chatId) {
+  state.activeChatId = chatId;
+  renderSidebar();
+  renderThreadHeader();
+  renderComposer();
+  try {
+    const data = await api("GET", `/api/conversations/${chatId}/messages`);
+    state.messages = data.messages;
+    renderThread();
+    const conv = await api("POST", `/api/conversations/${chatId}/read`);
+    upsertConversation(conv);
+  } catch (err) { toast(err.message); }
+}
+
+function upsertConversation(conv) {
+  if (!conv) return;
+  const idx = state.conversations.findIndex((c) => c.chat_id === conv.chat_id);
+  if (idx === -1) state.conversations.unshift(conv);
+  else state.conversations[idx] = conv;
+  state.conversations.sort((a, b) =>
+    String(b.last_message_at || "").localeCompare(String(a.last_message_at || "")));
+  renderSidebar();
+  if (conv.chat_id === state.activeChatId) renderThreadHeader();
+}
+
+function upsertMessage(msg) {
+  if (msg.chat_id !== state.activeChatId) return;
+  const idx = msg.id === null ? -1 : state.messages.findIndex((m) => m.id === msg.id);
+  if (idx === -1) state.messages.push(msg);
+  else state.messages[idx] = msg;
+  renderThread();
+}
+
+/* ------------------------------------------------------------- settings */
+
+function fillSettings(cfg) {
+  $("p-purpose").value = cfg.persona.purpose;
+  $("p-tone").value = cfg.persona.tone;
+  $("p-languages").value = cfg.persona.languages;
+  $("p-boundaries").value = cfg.persona.boundaries;
+  $("p-signature").value = cfg.persona.signature_style;
+
+  $("t-min").value = cfg.timing.min_delay_seconds;
+  $("t-max").value = cfg.timing.max_delay_seconds;
+  $("t-hours-on").checked = cfg.timing.active_hours_enabled;
+  $("t-start").value = cfg.timing.active_hours_start;
+  $("t-end").value = cfg.timing.active_hours_end;
+  $("t-tz").value = cfg.timing.timezone;
+
+  $("b-auto").checked = cfg.behavior.auto_send;
+  $("b-log").checked = cfg.behavior.log_all_messages;
+
+  $("a-model").value = cfg.ai.model;
+  $("a-tokens").value = cfg.ai.max_tokens;
+  $("a-temp").value = cfg.ai.temperature;
+}
+
+function collectSettings() {
+  return {
+    persona: {
+      purpose: $("p-purpose").value,
+      tone: $("p-tone").value,
+      languages: $("p-languages").value,
+      boundaries: $("p-boundaries").value,
+      signature_style: $("p-signature").value,
+    },
+    timing: {
+      min_delay_seconds: Number($("t-min").value),
+      max_delay_seconds: Number($("t-max").value),
+      active_hours_enabled: $("t-hours-on").checked,
+      active_hours_start: $("t-start").value,
+      active_hours_end: $("t-end").value,
+      timezone: $("t-tz").value,
+    },
+    behavior: {
+      auto_send: $("b-auto").checked,
+      log_all_messages: $("b-log").checked,
+      // Preserved here so saving Settings can't silently clear the global pause.
+      global_pause: state.config ? state.config.behavior.global_pause : false,
+    },
+    ai: {
+      model: $("a-model").value,
+      max_tokens: Number($("a-tokens").value),
+      temperature: Number($("a-temp").value),
+    },
+  };
+}
+
+function applyConfig(cfg) {
+  state.config = cfg;
+  const paused = cfg.behavior.global_pause;
+  const button = $("global-pause");
+  button.textContent = paused ? "Automation paused" : "Pause all";
+  button.classList.toggle("on", paused);
+
+  const bits = [];
+  bits.push(cfg.behavior.auto_send ? "auto-send ON" : "approval required");
+  if (cfg.timing.active_hours_enabled) {
+    bits.push(`active ${cfg.timing.active_hours_start}–${cfg.timing.active_hours_end} ${cfg.timing.timezone}`);
+  }
+  $("mode").textContent = bits.join(" · ");
+}
+
+/* ------------------------------------------------------------ websocket */
+
+let socket = null;
+let retryDelay = 1000;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${proto}://${location.host}/ws`);
+
+  socket.addEventListener("open", () => {
+    retryDelay = 1000;
+    $("conn-dot").classList.add("on");
+    $("conn-text").textContent = "live";
+  });
+
+  socket.addEventListener("close", () => {
+    $("conn-dot").classList.remove("on");
+    $("conn-text").textContent = "reconnecting…";
+    setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 15000);
+  });
+
+  socket.addEventListener("message", (ev) => {
+    let data;
+    try { data = JSON.parse(ev.data); } catch (_) { return; }
+    handleEvent(data);
+  });
+}
+
+function handleEvent(data) {
+  switch (data.type) {
+    case "hello":
+      state.conversations = data.conversations;
+      applyConfig(data.config);
+      fillSettings(data.config);
+      applyStatus(data.status);
+      renderSidebar();
+      break;
+
+    case "message":
+      state.drafting.delete(data.message.chat_id);
+      upsertConversation(data.conversation);
+      upsertMessage(data.message);
+      break;
+
+    case "conversation":
+      upsertConversation(data.conversation);
+      break;
+
+    case "config":
+      applyConfig(data.config);
+      if (!$("settings").classList.contains("open")) fillSettings(data.config);
+      break;
+
+    case "status":
+      applyStatus(data.status);
+      break;
+
+    case "drafting":
+      state.drafting.add(data.chat_id);
+      if (data.chat_id === state.activeChatId) renderThread();
+      break;
+
+    case "error":
+      state.drafting.delete(data.chat_id);
+      toast(data.text);
+      if (data.message) upsertMessage(data.message);
+      else if (data.chat_id === state.activeChatId) renderThread();
+      break;
+  }
+}
+
+function applyStatus(status) {
+  if (!status) return;
+  state.status = status;
+  const dot = $("conn-dot");
+  if (status.telegram_connected) {
+    dot.classList.add("on");
+    $("conn-text").textContent = status.me && status.me.name
+      ? `connected as ${status.me.name}` : "connected";
+  } else {
+    dot.classList.remove("on");
+    $("conn-text").textContent = "Telegram offline";
+    if (status.telegram_error) toast(status.telegram_error);
+  }
+  if (status.persona_configured === false) {
+    $("mode").textContent = "persona not configured — open Settings";
+  }
+}
+
+/* ----------------------------------------------------------------- boot */
+
+$("open-settings").addEventListener("click", () => {
+  if (state.config) fillSettings(state.config);
+  $("settings").classList.add("open");
+});
+$("close-settings").addEventListener("click", () => $("settings").classList.remove("open"));
+$("settings").addEventListener("click", (ev) => {
+  if (ev.target === $("settings")) $("settings").classList.remove("open");
+});
+
+$("settings-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    const saved = await api("PUT", "/api/config", collectSettings());
+    applyConfig(saved);
+    fillSettings(saved);
+    $("settings").classList.remove("open");
+    toast("Settings saved.", "info");
+  } catch (err) { toast(err.message); }
+});
+
+$("global-pause").addEventListener("click", async () => {
+  const next = !(state.config && state.config.behavior.global_pause);
+  try {
+    await api("POST", "/api/global-pause", { global_pause: next });
+  } catch (err) { toast(err.message); }
+});
+
+(async function boot() {
+  try {
+    state.conversations = await api("GET", "/api/conversations");
+    const cfg = await api("GET", "/api/config");
+    applyConfig(cfg);
+    fillSettings(cfg);
+    applyStatus(await api("GET", "/api/status"));
+    renderSidebar();
+  } catch (err) { toast("Could not load admin data: " + err.message); }
+  connect();
+  setInterval(() => {
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send("ping");
+  }, 25000);
+})();
+</script>
+</body>
+</html>
