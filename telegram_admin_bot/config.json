@@ -23,5 +23,11 @@
     "model": "deepseek-chat",
     "max_tokens": 400,
     "temperature": 1.0
+  },
+  "outreach": {
+    "min_gap_seconds": 90,
+    "max_gap_seconds": 300,
+    "daily_limit": 20,
+    "auto_send": false
   }
 }

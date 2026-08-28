@@ -25,6 +25,13 @@ STATUS_PENDING = "pending_approval"
 STATUS_REJECTED = "rejected"
 STATUS_ERROR = "error"
 
+# Outreach.status — messages we start, rather than reply to
+OUT_QUEUED = "queued"
+OUT_DRAFTED = "drafted"
+OUT_SENT = "sent"
+OUT_FAILED = "failed"
+OUT_CANCELLED = "cancelled"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     chat_id              INTEGER PRIMARY KEY,
@@ -49,6 +56,22 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at  TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS outreach (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id      INTEGER NOT NULL,
+    display_name TEXT    NOT NULL DEFAULT '',
+    goal         TEXT    NOT NULL,
+    status       TEXT    NOT NULL,
+    message      TEXT,
+    error        TEXT,
+    -- messages.id of the pending draft, so approving or rejecting it can
+    -- settle this row rather than leaving it stuck on "drafted".
+    draft_id     INTEGER,
+    created_at   TEXT    NOT NULL,
+    sent_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach (status, id);
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_tg
     ON messages (chat_id, telegram_id) WHERE telegram_id IS NOT NULL;
@@ -314,6 +337,119 @@ class Database:
         await self.conn.commit()
 
 
+    # ------------------------------------------------------------------
+    # Outreach — messages we start, rather than reply to
+    # ------------------------------------------------------------------
+
+    async def queue_outreach(
+        self, recipients: Iterable[tuple[int, str]], goal: str
+    ) -> list[dict[str, Any]]:
+        """Queue one message per (chat_id, display_name).
+
+        Skips anyone who already has a message waiting — queued, or drafted and
+        sitting unapproved — so a person never ends up with two unsent openers.
+        """
+        now = utcnow()
+        created: list[int] = []
+        async with self._lock:
+            for chat_id, name in recipients:
+                async with self.conn.execute(
+                    "SELECT 1 FROM outreach WHERE chat_id = ? AND status IN (?, ?)",
+                    (chat_id, OUT_QUEUED, OUT_DRAFTED),
+                ) as cur:
+                    if await cur.fetchone():
+                        continue
+                cur = await self.conn.execute(
+                    """
+                    INSERT INTO outreach (chat_id, display_name, goal, status, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, name, goal, OUT_QUEUED, now),
+                )
+                created.append(cur.lastrowid)
+            await self.conn.commit()
+        return [row for row in [await self.get_outreach(i) for i in created] if row]
+
+    async def get_outreach(self, outreach_id: int) -> Optional[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM outreach WHERE id = ?", (outreach_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _outreach(row) if row else None
+
+    async def list_outreach(self, limit: int = 200) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM (SELECT * FROM outreach ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_outreach(r) for r in rows]
+
+    async def next_queued_outreach(self) -> Optional[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM outreach WHERE status = ? ORDER BY id ASC LIMIT 1", (OUT_QUEUED,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _outreach(row) if row else None
+
+    async def update_outreach(
+        self,
+        outreach_id: int,
+        *,
+        status: Optional[str] = None,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+        draft_id: Optional[int] = None,
+        mark_sent: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        sets: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("status", status),
+            ("message", message),
+            ("error", error),
+            ("draft_id", draft_id),
+        ):
+            if value is not None:
+                sets.append(f"{column} = ?")
+                params.append(value)
+        if mark_sent:
+            sets.append("sent_at = ?")
+            params.append(utcnow())
+        if not sets:
+            return await self.get_outreach(outreach_id)
+        params.append(outreach_id)
+        await self.conn.execute(
+            f"UPDATE outreach SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self.conn.commit()
+        return await self.get_outreach(outreach_id)
+
+    async def outreach_for_draft(self, draft_id: int) -> Optional[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM outreach WHERE draft_id = ?", (draft_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _outreach(row) if row else None
+
+    async def cancel_queued_outreach(self) -> int:
+        """Stop everything not yet acted on. Returns how many were cancelled."""
+        cur = await self.conn.execute(
+            "UPDATE outreach SET status = ? WHERE status = ?", (OUT_CANCELLED, OUT_QUEUED)
+        )
+        await self.conn.commit()
+        return cur.rowcount
+
+    async def outreach_sent_since(self, iso_timestamp: str) -> int:
+        """How many outreach messages actually went out since a given moment."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM outreach WHERE status = ? AND sent_at >= ?",
+            (OUT_SENT, iso_timestamp),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["n"] if row else 0
+
+
 def _preview(text: str, limit: int = 90) -> str:
     flat = " ".join((text or "").split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
@@ -329,6 +465,21 @@ def _conversation(row: aiosqlite.Row) -> dict[str, Any]:
         "unread": row["unread"],
         "last_message_at": row["last_message_at"],
         "last_message_preview": row["last_message_preview"],
+    }
+
+
+def _outreach(row: aiosqlite.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "chat_id": row["chat_id"],
+        "display_name": row["display_name"],
+        "goal": row["goal"],
+        "status": row["status"],
+        "message": row["message"],
+        "error": row["error"],
+        "draft_id": row["draft_id"],
+        "created_at": row["created_at"],
+        "sent_at": row["sent_at"],
     }
 
 

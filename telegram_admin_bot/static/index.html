@@ -125,6 +125,44 @@
     align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px;
   }
   #settings.open { display: flex; }
+
+  /* ---------- outreach ---------- */
+  #outreach {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px;
+  }
+  #outreach.open { display: flex; }
+  .muted { color: var(--muted); font-weight: normal; }
+  .sub { margin: 22px 0 10px; font-size: 14px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .8px; }
+  .picker {
+    margin-top: 8px; max-height: 240px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+  }
+  .picker .row-item {
+    display: flex; align-items: center; gap: 9px; padding: 7px 11px;
+    border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .picker .row-item:last-child { border-bottom: 0; }
+  .picker .row-item:hover { background: var(--bg-hover); }
+  .picker input { width: auto; }
+  .picker .handle { color: var(--muted); font-size: 12px; }
+  .picker-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .queue { border: 1px solid var(--border); border-radius: 8px; max-height: 220px; overflow-y: auto; }
+  .queue .q {
+    display: flex; align-items: center; gap: 10px; padding: 8px 11px;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .queue .q:last-child { border-bottom: 0; }
+  .queue .q .who { font-weight: 600; min-width: 130px; }
+  .queue .q .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.queued { border-color: var(--accent); color: var(--accent); }
+  .tag.drafted { border-color: var(--pending-border); color: #e0b84a; }
+  .tag.sent { border-color: var(--ok); color: var(--ok); }
+  .tag.failed { border-color: var(--danger); color: var(--danger); }
+  .tag.cancelled { opacity: .6; }
   .sheet { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 14px;
     width: 100%; max-width: 720px; padding: 24px; }
   .sheet h2 { margin: 0 0 4px; font-size: 18px; }
@@ -158,6 +196,7 @@
   <span class="spacer"></span>
   <span id="mode" class="status"></span>
   <button id="global-pause" class="btn">Pause all</button>
+  <button id="open-outreach" class="btn">Outreach</button>
   <button id="open-settings" class="btn">Settings</button>
 </header>
 
@@ -237,6 +276,54 @@
         <button type="submit" class="btn primary">Save settings</button>
       </div>
     </form>
+  </div>
+</div>
+
+<div id="outreach">
+  <div class="sheet">
+    <h2>Message my contacts</h2>
+    <p class="hint">Pick people from your Telegram contacts and say what the message should
+      achieve — each one gets its own message written for them. Sends are spaced out and
+      capped per day, because Telegram penalises bursts of new conversations.</p>
+
+    <div class="field">
+      <label for="o-goal">What should the message do?</label>
+      <textarea id="o-goal" rows="3"
+        placeholder="e.g. let them know I'm away next week and to reach me by email"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Contacts <span id="o-count" class="muted"></span></label>
+      <input id="o-filter" type="text" placeholder="Filter by name or @username…">
+      <div id="o-contacts" class="picker">Loading contacts…</div>
+      <div class="picker-actions">
+        <button type="button" id="o-all" class="btn small">Select all shown</button>
+        <button type="button" id="o-none" class="btn small">Clear selection</button>
+      </div>
+    </div>
+
+    <div class="field check">
+      <input id="o-auto" type="checkbox">
+      <label for="o-auto">Send without asking me (otherwise each one waits for approval)</label>
+    </div>
+
+    <div class="row">
+      <div class="field"><label for="o-min">Min gap between sends (s)</label>
+        <input id="o-min" type="number" min="5" step="5"></div>
+      <div class="field"><label for="o-max">Max gap (s)</label>
+        <input id="o-max" type="number" min="5" step="5"></div>
+      <div class="field"><label for="o-limit">Max per day</label>
+        <input id="o-limit" type="number" min="1" step="1"></div>
+    </div>
+
+    <div class="sheet-actions">
+      <button type="button" id="o-close" class="btn">Close</button>
+      <button type="button" id="o-cancel" class="btn warn">Cancel queued</button>
+      <button type="button" id="o-queue" class="btn primary">Queue messages</button>
+    </div>
+
+    <h3 class="sub">Queue</h3>
+    <div id="o-status" class="queue">Nothing queued yet.</div>
   </div>
 </div>
 
@@ -622,6 +709,11 @@ function collectSettings() {
       max_tokens: Number($("a-tokens").value),
       temperature: Number($("a-temp").value),
     },
+    // Outreach is edited in its own panel; carry it through untouched so
+    // saving Settings can't quietly reset it to defaults.
+    outreach: state.config
+      ? state.config.outreach
+      : undefined,
   };
 }
 
@@ -639,6 +731,150 @@ function applyConfig(cfg) {
   }
   $("mode").textContent = bits.join(" · ");
 }
+
+/* ------------------------------------------------------------- outreach */
+
+const outreach = { contacts: [], selected: new Set(), items: [] };
+
+function renderContacts() {
+  const box = $("o-contacts");
+  const term = $("o-filter").value.trim().toLowerCase();
+  const shown = outreach.contacts.filter((c) =>
+    !term || c.display_name.toLowerCase().includes(term) ||
+    (c.username || "").toLowerCase().includes(term));
+
+  box.textContent = "";
+  if (!shown.length) {
+    const empty = el("div", "row-item", outreach.contacts.length
+      ? "No contacts match that filter." : "No contacts found on this account.");
+    box.appendChild(empty);
+  }
+
+  for (const c of shown) {
+    const row = el("label", "row-item");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = outreach.selected.has(c.chat_id);
+    cb.addEventListener("change", () => {
+      if (cb.checked) outreach.selected.add(c.chat_id);
+      else outreach.selected.delete(c.chat_id);
+      updateCount();
+    });
+    row.appendChild(cb);
+    row.appendChild(el("span", null, c.display_name));
+    if (c.username) row.appendChild(el("span", "handle", "@" + c.username));
+    if (c.is_bot) row.appendChild(el("span", "badge bot", "bot"));
+    box.appendChild(row);
+  }
+  updateCount();
+}
+
+function updateCount() {
+  $("o-count").textContent =
+    `— ${outreach.selected.size} selected of ${outreach.contacts.length}`;
+}
+
+function renderQueue() {
+  const box = $("o-status");
+  box.textContent = "";
+  if (!outreach.items.length) {
+    box.textContent = "Nothing queued yet.";
+    return;
+  }
+  for (const item of outreach.items.slice().reverse()) {
+    const row = el("div", "q");
+    row.appendChild(el("span", "tag " + item.status, item.status));
+    row.appendChild(el("span", "who", item.display_name || String(item.chat_id)));
+    row.appendChild(el("span", "txt", item.error || item.message || item.goal));
+    box.appendChild(row);
+  }
+}
+
+async function loadContacts() {
+  $("o-contacts").textContent = "Loading contacts…";
+  try {
+    outreach.contacts = await api("GET", "/api/contacts");
+    renderContacts();
+  } catch (err) {
+    $("o-contacts").textContent = "Could not load contacts: " + err.message;
+  }
+}
+
+async function loadQueue() {
+  try {
+    outreach.items = await api("GET", "/api/outreach");
+    renderQueue();
+  } catch (err) { /* the websocket will refresh it */ }
+}
+
+$("open-outreach").addEventListener("click", async () => {
+  $("outreach").classList.add("open");
+  if (state.config) {
+    $("o-auto").checked = state.config.outreach.auto_send;
+    $("o-min").value = state.config.outreach.min_gap_seconds;
+    $("o-max").value = state.config.outreach.max_gap_seconds;
+    $("o-limit").value = state.config.outreach.daily_limit;
+  }
+  await Promise.all([loadContacts(), loadQueue()]);
+});
+
+$("o-close").addEventListener("click", () => $("outreach").classList.remove("open"));
+$("outreach").addEventListener("click", (ev) => {
+  if (ev.target === $("outreach")) $("outreach").classList.remove("open");
+});
+$("o-filter").addEventListener("input", renderContacts);
+
+$("o-all").addEventListener("click", () => {
+  const term = $("o-filter").value.trim().toLowerCase();
+  for (const c of outreach.contacts) {
+    if (!term || c.display_name.toLowerCase().includes(term) ||
+        (c.username || "").toLowerCase().includes(term)) {
+      outreach.selected.add(c.chat_id);
+    }
+  }
+  renderContacts();
+});
+
+$("o-none").addEventListener("click", () => {
+  outreach.selected.clear();
+  renderContacts();
+});
+
+$("o-queue").addEventListener("click", async () => {
+  const goal = $("o-goal").value.trim();
+  if (!goal) { toast("Say what the message should achieve."); return; }
+  if (!outreach.selected.size) { toast("Pick at least one contact."); return; }
+
+  // Pacing and the daily cap live in config, so save them before queueing.
+  try {
+    const cfg = JSON.parse(JSON.stringify(state.config));
+    cfg.outreach.auto_send = $("o-auto").checked;
+    cfg.outreach.min_gap_seconds = Number($("o-min").value);
+    cfg.outreach.max_gap_seconds = Number($("o-max").value);
+    cfg.outreach.daily_limit = Number($("o-limit").value);
+    applyConfig(await api("PUT", "/api/config", cfg));
+  } catch (err) { toast("Could not save outreach settings: " + err.message); return; }
+
+  $("o-queue").disabled = true;
+  try {
+    const res = await api("POST", "/api/outreach",
+                          { chat_ids: [...outreach.selected], goal });
+    const skipped = res.skipped ? `, ${res.skipped} already queued` : "";
+    toast(`Queued ${res.queued} message(s)${skipped}.`, "info");
+    outreach.selected.clear();
+    renderContacts();
+    await loadQueue();
+  } catch (err) { toast(err.message); }
+  $("o-queue").disabled = false;
+});
+
+$("o-cancel").addEventListener("click", async () => {
+  try {
+    const res = await api("POST", "/api/outreach/cancel");
+    toast(`Cancelled ${res.cancelled} queued message(s).`, "info");
+    await loadQueue();
+  } catch (err) { toast(err.message); }
+});
 
 /* ------------------------------------------------------------ websocket */
 
@@ -701,6 +937,15 @@ function handleEvent(data) {
     case "drafting":
       state.drafting.add(data.chat_id);
       if (data.chat_id === state.activeChatId) renderThread();
+      break;
+
+    case "outreach":
+      outreach.items = data.items;
+      renderQueue();
+      break;
+
+    case "outreach_paused":
+      toast(data.reason, "info");
       break;
 
     case "error":

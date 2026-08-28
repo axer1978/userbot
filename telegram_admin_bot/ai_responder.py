@@ -55,6 +55,36 @@ def build_system_prompt(persona: dict[str, Any]) -> str:
     return PERSONA_HEADER + "\n\n" + "\n\n".join(sections)
 
 
+async def generate_opener(
+    *,
+    api_key: str,
+    goal: str,
+    recipient_name: str,
+    persona: dict[str, Any],
+    ai_config: dict[str, Any],
+    client: Optional[httpx.AsyncClient] = None,
+) -> str:
+    """Draft the first message of a conversation, given what it should achieve."""
+    if not (goal or "").strip():
+        raise AIResponderError("No goal given for the outreach message.")
+
+    system = build_system_prompt(persona)
+    system += (
+        f"\n\nYou are writing the FIRST message to {recipient_name}, someone in this "
+        "person's own contacts. Keep it short, personal and natural — the way you would "
+        "message someone you know, not a marketing blast. Do not invent facts about "
+        "them, and do not pretend a previous conversation happened."
+    )
+
+    history = [{"role": "user", "content": f"Write that message. Its purpose: {goal}"}]
+    return await _complete(
+        api_key=api_key,
+        messages=[{"role": "system", "content": system}] + history,
+        ai_config=ai_config,
+        client=client,
+    )
+
+
 def _redact(text: str, secret: Optional[str]) -> str:
     """Belt-and-braces: never let the key reach a log line or the admin panel."""
     if secret and secret in text:
@@ -93,6 +123,22 @@ async def generate_reply(
     messages.extend(history)
     if len(messages) == 1:
         raise AIResponderError("No conversation history to reply to.")
+
+    return await _complete(
+        api_key=api_key, messages=messages, ai_config=ai_config, client=client
+    )
+
+
+async def _complete(
+    *,
+    api_key: str,
+    messages: list[dict[str, str]],
+    ai_config: dict[str, Any],
+    client: Optional[httpx.AsyncClient] = None,
+) -> str:
+    """One DeepSeek chat completion, with retry/backoff and safe error text."""
+    if not api_key:
+        raise AIResponderError("DEEPSEEK_API_KEY is not set.")
 
     payload = {
         "model": ai_config.get("model") or "deepseek-chat",

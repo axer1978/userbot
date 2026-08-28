@@ -144,6 +144,33 @@ restart.
 Sending a message from your phone or Telegram Desktop shows up in the panel too,
 so the thread stays complete.
 
+## Messaging your contacts first
+
+The **Outreach** button opens a panel for starting conversations rather than
+only replying to them.
+
+Pick people from your Telegram contacts, say what the message should achieve
+("let them know I'm away next week"), and each person gets their own message
+written for them — not a copy-pasted blast.
+
+- **Contacts only.** The recipient list comes from your own Telegram contacts,
+  and the server re-checks membership when you queue. Anyone else is refused.
+- **Approval by default.** Each message appears as a pending draft in that
+  conversation, with the usual Approve / Edit / Reject. Tick *"Send without
+  asking me"* to skip approval.
+- **Paced.** Messages go out one at a time with a random gap (default 90–300
+  seconds) and a daily cap (default 20). Telegram penalises bursts of new
+  conversations, so raising these makes a limit more likely, not less.
+- **One at a time per person.** Someone who already has a queued or unapproved
+  message is skipped rather than given a second one.
+- **Stoppable.** *Cancel queued* drops everything not yet acted on, and the
+  global pause holds outreach too. Hitting the daily cap leaves the rest queued
+  for the next day rather than dropping them.
+
+A word on what this is for: messaging people who already know you and expect to
+hear from you. Telegram limits or bans accounts that send unsolicited DMs, and
+that risk falls on your account.
+
 ## Errors
 
 DeepSeek failures (network, timeout, HTTP 429, malformed response) are retried

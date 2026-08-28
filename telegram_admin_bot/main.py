@@ -10,7 +10,8 @@ import logging
 import os
 import random
 import sys
-from datetime import datetime, time as dtime
+from contextlib import suppress
+from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import InputPeerUser, User
 
 import ai_responder
@@ -37,6 +39,11 @@ from database import (
     DIR_IN,
     DIR_OUT,
     DIR_SYSTEM,
+    OUT_CANCELLED,
+    OUT_DRAFTED,
+    OUT_FAILED,
+    OUT_QUEUED,
+    OUT_SENT,
     STATUS_ERROR,
     STATUS_PENDING,
     STATUS_RECEIVED,
@@ -194,6 +201,8 @@ telegram_state: dict[str, Any] = {"connected": False, "error": None}
 # One in-flight drafting task per chat. A newer message supersedes an older
 # draft, so the reply always answers the latest state of the conversation.
 draft_tasks: dict[int, asyncio.Task] = {}
+# Single worker draining the outreach queue, so sends stay paced.
+outreach_task: Optional[asyncio.Task] = None
 # Texts we are sending right now, so the outgoing-message handler doesn't
 # record a duplicate of a message our own send path already logged.
 in_flight_sends: dict[int, list[str]] = {}
@@ -388,6 +397,146 @@ async def draft_worker(chat_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Outreach — messages we start, to people already in the account's contacts
+# ---------------------------------------------------------------------------
+
+
+def start_of_day_utc() -> str:
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+
+
+def ensure_outreach_worker() -> None:
+    global outreach_task
+    if outreach_task is None or outreach_task.done():
+        outreach_task = asyncio.create_task(outreach_worker())
+
+
+async def outreach_worker() -> None:
+    """Drain the queue one at a time, spaced out and capped per day."""
+    try:
+        while True:
+            item = await db.next_queued_outreach()
+            if item is None:
+                return
+
+            settings = config["outreach"]
+            if config["behavior"].get("global_pause"):
+                log.info("Outreach paused (global pause); leaving %s queued.", item["id"])
+                return
+
+            sent_today = await db.outreach_sent_since(start_of_day_utc())
+            limit = int(settings.get("daily_limit", 20))
+            if sent_today >= limit:
+                log.info(
+                    "Outreach daily limit reached (%s/%s); the rest stays queued for tomorrow.",
+                    sent_today, limit,
+                )
+                await hub.broadcast({
+                    "type": "outreach_paused",
+                    "reason": f"Daily limit of {limit} reached. Remaining messages stay queued.",
+                })
+                return
+
+            await process_outreach(item)
+
+            if await db.next_queued_outreach() is not None:
+                low = int(settings.get("min_gap_seconds", 90))
+                high = int(settings.get("max_gap_seconds", 300))
+                gap = random.uniform(min(low, high), max(low, high))
+                log.info("Next outreach message in %.0fs.", gap)
+                await asyncio.sleep(gap)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Outreach worker stopped unexpectedly")
+
+
+async def process_outreach(item: dict[str, Any]) -> None:
+    """Draft one outreach message and either send it or queue it for approval."""
+    outreach_id, chat_id = item["id"], item["chat_id"]
+    try:
+        text = await ai_responder.generate_opener(
+            api_key=env.deepseek_key,
+            goal=item["goal"],
+            recipient_name=item["display_name"] or "them",
+            persona=config["persona"],
+            ai_config=config["ai"],
+            client=http_client,
+        )
+    except ai_responder.AIResponderError as exc:
+        await db.update_outreach(outreach_id, status=OUT_FAILED, error=str(exc))
+        await push_error(chat_id, f"Outreach draft failed: {exc}")
+        await broadcast_outreach()
+        return
+
+    if not config["outreach"].get("auto_send"):
+        row = await db.record_message(
+            chat_id, DIR_OUT, STATUS_PENDING, text, bump_preview=False
+        )
+        await db.update_outreach(
+            outreach_id,
+            status=OUT_DRAFTED,
+            message=text,
+            draft_id=row["id"] if row else None,
+        )
+        if row is not None:
+            await push_message(row)
+        log.info("Outreach draft for %s awaiting approval.", item["display_name"])
+        await broadcast_outreach()
+        return
+
+    try:
+        await send_as_me(chat_id, text)
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        await db.update_outreach(outreach_id, status=OUT_FAILED, error=detail)
+        await push_error(chat_id, f"Could not send outreach message: {detail}")
+    else:
+        await db.update_outreach(
+            outreach_id, status=OUT_SENT, message=text, mark_sent=True
+        )
+        log.info("Outreach message sent to %s.", item["display_name"])
+    await broadcast_outreach()
+
+
+async def settle_outreach_draft(
+    draft_id: int, status: str, text: Optional[str] = None
+) -> None:
+    """Close out the queue row behind an approved or rejected outreach draft."""
+    item = await db.outreach_for_draft(draft_id)
+    if item is None or item["status"] != OUT_DRAFTED:
+        return
+    await db.update_outreach(
+        item["id"], status=status, message=text, mark_sent=(status == OUT_SENT)
+    )
+    await broadcast_outreach()
+
+
+async def broadcast_outreach() -> None:
+    await hub.broadcast({"type": "outreach", "items": await db.list_outreach()})
+
+
+async def list_contacts() -> list[dict[str, Any]]:
+    """The account's own Telegram contacts — the only people outreach can target."""
+    result = await client(GetContactsRequest(hash=0))
+    contacts = []
+    for user in getattr(result, "users", []):
+        if getattr(user, "deleted", False) or getattr(user, "is_self", False):
+            continue
+        name, username, is_bot, access_hash = describe_sender(user, user.id)
+        await db.upsert_conversation(user.id, name, username, is_bot, access_hash)
+        contacts.append({
+            "chat_id": user.id,
+            "display_name": name,
+            "username": username,
+            "is_bot": is_bot,
+        })
+    contacts.sort(key=lambda c: c["display_name"].lower())
+    return contacts
+
+
+# ---------------------------------------------------------------------------
 # Telethon handlers
 # ---------------------------------------------------------------------------
 
@@ -512,6 +661,11 @@ class ApproveBody(BaseModel):
     text: Optional[str] = None
 
 
+class OutreachBody(BaseModel):
+    chat_ids: list[int] = Field(default_factory=list)
+    goal: str = ""
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     return {
@@ -619,11 +773,14 @@ async def api_approve(draft_id: int, body: ApproveBody) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Message is empty")
 
     try:
-        return await send_as_me(draft["chat_id"], text, draft_id=draft_id)
+        sent = await send_as_me(draft["chat_id"], text, draft_id=draft_id)
     except Exception as exc:
         detail = f"Could not send draft: {type(exc).__name__}: {exc}"
         await push_error(draft["chat_id"], detail)
         raise HTTPException(status_code=502, detail=detail) from exc
+
+    await settle_outreach_draft(draft_id, OUT_SENT, text=text)
+    return sent
 
 
 @app.post("/api/drafts/{draft_id}/reject")
@@ -634,7 +791,74 @@ async def api_reject(draft_id: int) -> dict[str, Any]:
     row = await db.update_message(draft_id, status=STATUS_REJECTED)
     if row is not None:
         await push_message(row)
+    await settle_outreach_draft(draft_id, OUT_CANCELLED)
     return row or {}
+
+
+@app.get("/api/contacts")
+async def api_contacts() -> list[dict[str, Any]]:
+    if not telegram_state["connected"]:
+        raise HTTPException(status_code=503, detail="Telegram is not connected yet")
+    try:
+        return await list_contacts()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Could not read contacts: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+@app.get("/api/outreach")
+async def api_outreach_list() -> list[dict[str, Any]]:
+    return await db.list_outreach()
+
+
+@app.post("/api/outreach")
+async def api_outreach_queue(body: OutreachBody) -> dict[str, Any]:
+    goal = body.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="Say what the message should achieve")
+    if not body.chat_ids:
+        raise HTTPException(status_code=400, detail="Pick at least one contact")
+
+    # Only people already in the account's contacts may be targeted.
+    try:
+        allowed = {c["chat_id"]: c["display_name"] for c in await list_contacts()}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Could not verify contacts: {type(exc).__name__}"
+        ) from exc
+
+    unknown = [cid for cid in body.chat_ids if cid not in allowed]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(unknown)} of those are not in your Telegram contacts. "
+                "Outreach only goes to people you already have as contacts."
+            ),
+        )
+
+    recipients = [(cid, allowed[cid]) for cid in body.chat_ids]
+    queued = await db.queue_outreach(recipients, goal)
+    ensure_outreach_worker()
+    await broadcast_outreach()
+    return {"queued": len(queued), "skipped": len(recipients) - len(queued)}
+
+
+@app.post("/api/outreach/cancel")
+async def api_outreach_cancel() -> dict[str, Any]:
+    cancelled = await db.cancel_queued_outreach()
+    global outreach_task
+    task, outreach_task = outreach_task, None
+    if task is not None and not task.done():
+        task.cancel()
+        # Wait for it to actually stop. Otherwise queueing again straight after
+        # sees a task that is cancelling-but-not-done and starts no replacement,
+        # leaving the new items sitting in the queue forever.
+        with suppress(asyncio.CancelledError):
+            await task
+    await broadcast_outreach()
+    return {"cancelled": cancelled}
 
 
 @app.websocket("/ws")

@@ -41,6 +41,15 @@ DEFAULTS: dict[str, Any] = {
         "max_tokens": 400,
         "temperature": 1.0,
     },
+    # Messages the assistant starts, to people already in your contacts.
+    "outreach": {
+        # Telegram rate-limits and penalises bursts of new conversations, so
+        # sends are spaced out and capped per day.
+        "min_gap_seconds": 90,
+        "max_gap_seconds": 300,
+        "daily_limit": 20,
+        "auto_send": False,
+    },
 }
 
 
@@ -128,6 +137,15 @@ def normalize(raw: Any) -> dict[str, Any]:
     behavior = cfg["behavior"]
     for field, default_value in DEFAULTS["behavior"].items():
         behavior[field] = _as_bool(behavior.get(field), default_value)
+
+    out = cfg["outreach"]
+    d = DEFAULTS["outreach"]
+    out["min_gap_seconds"] = _as_int(out.get("min_gap_seconds"), d["min_gap_seconds"], 5, 86_400)
+    out["max_gap_seconds"] = _as_int(out.get("max_gap_seconds"), d["max_gap_seconds"], 5, 86_400)
+    if out["max_gap_seconds"] < out["min_gap_seconds"]:
+        out["max_gap_seconds"] = out["min_gap_seconds"]
+    out["daily_limit"] = _as_int(out.get("daily_limit"), d["daily_limit"], 1, 1000)
+    out["auto_send"] = _as_bool(out.get("auto_send"), d["auto_send"])
 
     ai = cfg["ai"]
     ai["model"] = _as_text(ai.get("model")) or DEFAULTS["ai"]["model"]
