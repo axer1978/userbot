@@ -54,10 +54,19 @@ from database import (
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DB_PATH = BASE_DIR / "assistant.db"
+# Where mutable state lives. Separate from the code so a container can keep the
+# database and config on a volume that survives a rebuild.
+DATA_DIR = Path(os.getenv("DATA_DIR") or BASE_DIR)
+DB_PATH = DATA_DIR / "assistant.db"
 
-HOST = "127.0.0.1"  # localhost only — never bind 0.0.0.0, there is no auth
-PORT = 8787
+# Localhost only by default — the panel has no login, so it must not be
+# reachable from the network. ADMIN_HOST exists for containers, where the
+# process binds inside the container and Docker publishes it back to the
+# host's loopback only. Anything other than loopback is shouted about at
+# startup, because it means the panel is exposed with no authentication.
+HOST = (os.getenv("ADMIN_HOST") or "127.0.0.1").strip()
+PORT = int(os.getenv("ADMIN_PORT") or 8787)
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 REQUIRED_ENV = ("API_ID", "API_HASH", "SESSION", "DEEPSEEK_API_KEY")
 
@@ -1012,6 +1021,13 @@ async def run_web() -> None:
     server = uvicorn.Server(
         uvicorn.Config(app, host=HOST, port=PORT, log_level="warning", access_log=False)
     )
+    if HOST not in LOOPBACK:
+        log.warning(
+            "Admin panel bound to %s, not loopback. It has NO LOGIN — anyone who "
+            "can reach this port controls the account. Only do this inside a "
+            "container whose port is published to 127.0.0.1, or behind a firewall.",
+            HOST,
+        )
     log.info("Admin panel: http://%s:%s", HOST, PORT)
     await server.serve()
 

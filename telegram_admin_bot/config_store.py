@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-CONFIG_PATH = Path(__file__).with_name("config.json")
+# DATA_DIR lets a container keep config.json on a volume, away from the code.
+CONFIG_PATH = Path(os.getenv("DATA_DIR") or Path(__file__).parent) / "config.json"
 
 DEFAULTS: dict[str, Any] = {
     "persona": {

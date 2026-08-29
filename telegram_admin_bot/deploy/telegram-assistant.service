@@ -1,0 +1,39 @@
+# systemd unit, for running without Docker.
+#
+#   sudo cp deploy/telegram-assistant.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now telegram-assistant
+#   journalctl -u telegram-assistant -f        # follow the logs
+#
+# Adjust User and the two paths to match where you put the project.
+
+[Unit]
+Description=Telegram AI support assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram
+WorkingDirectory=/opt/telegram_admin_bot
+ExecStart=/opt/telegram_admin_bot/.venv/bin/python main.py
+
+# Credentials are read from this file, not from the unit, so they stay out of
+# systemctl show and the journal.
+EnvironmentFile=/opt/telegram_admin_bot/.env
+
+Restart=always
+RestartSec=10
+
+# The panel has no login: keep it on loopback and reach it over an SSH tunnel.
+Environment=ADMIN_HOST=127.0.0.1
+
+# Basic hardening — the process only ever needs its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram_admin_bot
+
+[Install]
+WantedBy=multi-user.target

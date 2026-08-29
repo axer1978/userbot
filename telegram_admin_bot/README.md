@@ -144,6 +144,83 @@ restart.
 Sending a message from your phone or Telegram Desktop shows up in the panel too,
 so the thread stays complete.
 
+## Running it 24/7
+
+The bot only runs while the machine it is on is powered up and awake. Closing a
+laptop lid stops it. For round-the-clock operation it has to live on a machine
+that stays on — a small VPS (~$4–6/month), a Raspberry Pi, or any always-on box.
+
+**The panel has no login.** Everything below keeps it bound to loopback on the
+server; you reach it through an SSH tunnel, so it is never exposed to the
+internet:
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 you@your-server
+```
+
+Leave that running and open http://127.0.0.1:8787 on your laptop as usual. The
+tunnel is only needed when you want to look at the panel — the bot keeps
+answering with nobody connected.
+
+### With Docker (simplest)
+
+```bash
+git clone https://github.com/axer1978/userbot.git
+cd userbot/telegram_admin_bot
+cp .env.example .env      # then fill in all four values
+docker compose up -d --build
+docker compose logs -f    # watch it connect
+```
+
+`restart: unless-stopped` brings it back after a crash or a server reboot.
+`assistant.db` and `config.json` live in `./data`, so rebuilding does not lose
+your conversations or settings.
+
+To update: `git pull && docker compose up -d --build`.
+
+### Without Docker (systemd)
+
+```bash
+sudo useradd -r -s /usr/sbin/nologin telegram
+sudo git clone https://github.com/axer1978/userbot.git /opt/userbot
+sudo mv /opt/userbot/telegram_admin_bot /opt/telegram_admin_bot
+cd /opt/telegram_admin_bot
+sudo python3 -m venv .venv && sudo .venv/bin/pip install -r requirements.txt
+sudo cp .env.example .env && sudo nano .env       # fill in the four values
+sudo chown -R telegram:telegram /opt/telegram_admin_bot
+
+sudo cp deploy/telegram-assistant.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-assistant
+journalctl -u telegram-assistant -f
+```
+
+### Getting your credentials onto the server
+
+Copy the `.env` you already have — that is the whole job, and it avoids logging
+in to Telegram a second time:
+
+```bash
+scp telegram_admin_bot/.env you@your-server:/opt/telegram_admin_bot/.env
+```
+
+Or run `python setup_session.py` over SSH and log in there instead.
+
+Either way, run **one** instance. Two copies of the same session string both
+answering the same chats will duplicate replies.
+
+### Environment variables for deployment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATA_DIR` | next to `main.py` | Where `assistant.db` and `config.json` live — point it at a volume |
+| `ADMIN_HOST` | `127.0.0.1` | Bind address. Only change it inside a container whose port is published to loopback |
+| `ADMIN_PORT` | `8787` | Panel port |
+
+Binding `ADMIN_HOST` to anything other than loopback logs a warning at startup,
+because it means the panel — which can send messages as you — is reachable with
+no password.
+
 ## Sounding like a person
 
 Three things under **Settings → Sounding human**, all on by default:
